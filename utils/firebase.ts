@@ -62,10 +62,11 @@ export const isFirebaseReady = (): boolean => {
   return isInitialized && database !== null;
 };
 
-// Helper to get user-specific path
-const getUserPath = (path: string): string => {
-  if (!auth?.currentUser) return path;
-  return `users/${auth.currentUser.uid}/${path}`;
+// Helper to get shared path (all devices use the same path for syncing)
+const getSharedPath = (path: string): string => {
+  // Use a shared path so all devices can sync together
+  // Since this is a personal app for two people, we use a shared space
+  return `shared/${path}`;
 };
 
 // Firebase sync functions
@@ -74,8 +75,9 @@ export const firebaseSync = {
   save: async (path: string, data: any): Promise<void> => {
     if (!isFirebaseReady()) return;
     try {
-      const dbRef = ref(database!, getUserPath(path));
+      const dbRef = ref(database!, getSharedPath(path));
       await set(dbRef, data);
+      console.log('✅ Saved to Firebase:', path);
     } catch (error) {
       console.error('Firebase save error:', error);
     }
@@ -85,9 +87,13 @@ export const firebaseSync = {
   get: async (path: string): Promise<any> => {
     if (!isFirebaseReady()) return null;
     try {
-      const dbRef = ref(database!, getUserPath(path));
+      const dbRef = ref(database!, getSharedPath(path));
       const snapshot = await get(dbRef);
-      return snapshot.exists() ? snapshot.val() : null;
+      const data = snapshot.exists() ? snapshot.val() : null;
+      if (data) {
+        console.log('✅ Loaded from Firebase:', path, Object.keys(data).length, 'items');
+      }
+      return data;
     } catch (error) {
       console.error('Firebase get error:', error);
       return null;
@@ -98,7 +104,7 @@ export const firebaseSync = {
   delete: async (path: string): Promise<void> => {
     if (!isFirebaseReady()) return;
     try {
-      const dbRef = ref(database!, getUserPath(path));
+      const dbRef = ref(database!, getSharedPath(path));
       await remove(dbRef);
     } catch (error) {
       console.error('Firebase delete error:', error);
@@ -111,9 +117,11 @@ export const firebaseSync = {
       return () => {}; // Return no-op unsubscribe
     }
     try {
-      const dbRef = ref(database!, getUserPath(path));
+      const dbRef = ref(database!, getSharedPath(path));
+      console.log('👂 Listening to Firebase changes:', path);
       onValue(dbRef, (snapshot) => {
         const data = snapshot.exists() ? snapshot.val() : null;
+        console.log('📥 Received Firebase update:', path, data ? Object.keys(data).length + ' items' : 'empty');
         callback(data);
       });
       

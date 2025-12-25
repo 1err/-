@@ -69,20 +69,20 @@ VITE_FIREBASE_APP_ID=your_app_id
 ## Step 6: Secure Your Database (Important!)
 
 1. Go to **Realtime Database** → **Rules** tab
-2. Replace the rules with this (allows authenticated users to read/write their own data):
+2. Replace the rules with this (allows authenticated users to read/write shared data):
 
 ```json
 {
   "rules": {
-    "users": {
-      "$uid": {
-        ".read": "$uid === auth.uid",
-        ".write": "$uid === auth.uid"
-      }
+    "shared": {
+      ".read": "auth != null",
+      ".write": "auth != null"
     }
   }
 }
 ```
+
+**Note:** This allows any authenticated user (anonymous or otherwise) to read/write to the shared path. Since this is a personal app for you and your girlfriend, this is fine. The data is still private to your Firebase project.
 
 3. Click **"Publish"**
 
