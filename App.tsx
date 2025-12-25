@@ -107,15 +107,20 @@ function App() {
           date: new Date().toISOString(),
           caption: '嘿嘿'
         };
-        // Save directly to DB (will sync to Firebase and trigger real-time update)
+        // Save directly to DB (will sync to Firebase)
         await db.saveMemory(newMemory);
         return newMemory;
       });
 
-      // Don't update state here - let the real-time listener handle it
-      // This prevents duplicates
-      await Promise.all(newMemoriesPromises);
-      // The real-time sync will update the state automatically
+      const newMemories = await Promise.all(newMemoriesPromises);
+      
+      // Update state immediately for instant feedback
+      // The real-time listener will also update, but we deduplicate by ID
+      setMemories(prev => {
+        const existingIds = new Set(prev.map(m => m.id));
+        const uniqueNew = newMemories.filter(m => !existingIds.has(m.id));
+        return [...uniqueNew, ...prev].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+      });
     }
   };
 
