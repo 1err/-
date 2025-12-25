@@ -1,5 +1,5 @@
 import { Memory, TodoItem } from '../types';
-import { initFirebase, firebaseSync, isFirebaseReady } from './firebase';
+import { initFirebase, firebaseSync, firebaseStorage, isFirebaseReady } from './firebase';
 
 const DB_NAME = 'LoveStoryDB';
 const DB_VERSION = 1;
@@ -91,17 +91,49 @@ export const getAllMemories = async (): Promise<Memory[]> => {
 };
 
 export const saveMemory = async (memory: Memory): Promise<IDBValidKey> => {
-  // Save to IndexedDB first (fast, local)
+  // Save to IndexedDB first (fast, local) - keep base64 for offline access
   const result = await performTransaction(STORE_MEMORIES, 'readwrite', (store) => store.put(memory));
   
   // Sync to Firebase (for cross-device sync)
   if (isFirebaseReady()) {
     try {
+      // Check if URL is base64 (large file) - if so, upload to Storage first
+      let memoryForFirebase = { ...memory };
+      
+      if (memory.url.startsWith('data:')) {
+        // Large base64 file - upload to Firebase Storage
+        console.log('📤 Uploading large file to Firebase Storage:', memory.id);
+        const storageUrl = await firebaseStorage.uploadMedia(memory.url, memory.id, memory.type);
+        
+        if (storageUrl) {
+          // Use Storage URL for Firebase sync (much smaller)
+          memoryForFirebase = { ...memory, url: storageUrl };
+          console.log('✅ File uploaded to Storage, using URL for sync');
+        } else {
+          console.warn('⚠️ Storage upload failed, skipping Firebase sync for this memory');
+          return result; // Skip Firebase sync if Storage upload fails
+        }
+      }
+      
+      // Get all memories and prepare for sync
       const allMemories = await performTransaction(STORE_MEMORIES, 'readonly', (store) => store.getAll()) as Memory[];
-      const memoriesObj: Record<string, Memory> = {};
-      allMemories.forEach(m => {
-        memoriesObj[m.id] = m;
-      });
+      const memoriesObj: Record<string, any> = {};
+      
+      // For each memory, use Storage URL if available, otherwise use original URL
+      for (const m of allMemories) {
+        if (m.id === memory.id && memoryForFirebase.url !== memory.url) {
+          // Use the Storage URL for this memory
+          memoriesObj[m.id] = memoryForFirebase;
+        } else if (m.url.startsWith('data:')) {
+          // Check if we already have a Storage URL for this memory
+          // For now, skip base64 URLs that are too large
+          // They'll be uploaded when accessed
+          continue;
+        } else {
+          memoriesObj[m.id] = m;
+        }
+      }
+      
       console.log('💾 Syncing memories to Firebase:', Object.keys(memoriesObj).length, 'memories');
       await firebaseSync.save('memories', memoriesObj);
       console.log('✅ Memories synced to Firebase successfully');
@@ -244,14 +276,30 @@ export const setupRealtimeSync = (
   const unsubscribers: (() => void)[] = [];
 
   // Listen to memories changes
-  const unsubMemories = firebaseSync.listen('memories', (data) => {
+  const unsubMemories = firebaseSync.listen('memories', async (data) => {
     console.log('📥 Real-time sync: memories updated', data ? Object.keys(data).length + ' items' : 'empty');
     if (data && typeof data === 'object') {
-      const memories = Object.values(data) as Memory[];
-      console.log('🔄 Updating memories from Firebase:', memories.length);
-      onMemoriesChange(memories);
+      const firebaseMemories = Object.values(data) as Memory[];
+      
+      // Merge with local IndexedDB (prefer local base64 for offline)
+      const localMemories = await performTransaction(STORE_MEMORIES, 'readonly', (store) => store.getAll()) as Memory[];
+      const localMap = new Map(localMemories.map(m => [m.id, m]));
+      
+      // For each Firebase memory, prefer local base64 if available
+      const mergedMemories = firebaseMemories.map(fbMemory => {
+        const localMemory = localMap.get(fbMemory.id);
+        return localMemory && localMemory.url.startsWith('data:') ? localMemory : fbMemory;
+      });
+      
+      // Add any local-only memories
+      firebaseMemories.forEach(fbMem => localMap.delete(fbMem.id));
+      localMap.forEach(localMem => mergedMemories.push(localMem));
+      
+      console.log('🔄 Updating memories from Firebase:', mergedMemories.length);
+      onMemoriesChange(mergedMemories);
+      
       // Also update IndexedDB
-      Promise.all(memories.map(m => 
+      Promise.all(mergedMemories.map(m => 
         performTransaction(STORE_MEMORIES, 'readwrite', (store) => store.put(m))
       )).catch(console.error);
     } else if (data === null) {

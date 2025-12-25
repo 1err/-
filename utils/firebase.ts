@@ -1,6 +1,7 @@
 import { initializeApp } from 'firebase/app';
 import { getDatabase, ref, set, get, remove, onValue, off, Database } from 'firebase/database';
 import { getAuth, signInAnonymously, Auth } from 'firebase/auth';
+import { getStorage, ref as storageRef, uploadString, getDownloadURL, StorageReference, FirebaseStorage } from 'firebase/storage';
 
 // Firebase configuration - will be provided by user
 const firebaseConfig = {
@@ -16,6 +17,7 @@ const firebaseConfig = {
 // Initialize Firebase
 let app: any = null;
 let database: Database | null = null;
+let storage: FirebaseStorage | null = null;
 let auth: Auth | null = null;
 let isInitialized = false;
 
@@ -40,6 +42,7 @@ export const initFirebase = async (): Promise<boolean> => {
     console.log('Initializing Firebase...');
     app = initializeApp(firebaseConfig);
     database = getDatabase(app);
+    storage = getStorage(app);
     auth = getAuth(app);
     
     // Sign in anonymously for simple authentication
@@ -132,6 +135,42 @@ export const firebaseSync = {
     } catch (error) {
       console.error('Firebase listen error:', error);
       return () => {};
+    }
+  }
+};
+
+// Firebase Storage functions for large files (images/videos)
+export const firebaseStorage = {
+  // Upload base64 image/video to Firebase Storage and return URL
+  uploadMedia: async (base64Data: string, memoryId: string, type: 'image' | 'video'): Promise<string | null> => {
+    if (!isFirebaseReady() || !storage) {
+      console.warn('Firebase Storage not ready, skipping upload');
+      return null;
+    }
+
+    try {
+      // Determine file extension
+      const extension = type === 'image' 
+        ? (base64Data.startsWith('data:image/jpeg') ? 'jpg' : 
+           base64Data.startsWith('data:image/png') ? 'png' : 
+           base64Data.startsWith('data:image/gif') ? 'gif' : 'jpg')
+        : (base64Data.startsWith('data:video/mp4') ? 'mp4' : 'mp4');
+
+      // Create storage reference
+      const fileRef = storageRef(storage, `memories/${memoryId}.${extension}`);
+      
+      // Upload base64 string
+      console.log(`📤 Uploading ${type} to Firebase Storage:`, memoryId);
+      await uploadString(fileRef, base64Data, 'data_url');
+      
+      // Get download URL
+      const downloadURL = await getDownloadURL(fileRef);
+      console.log(`✅ Uploaded to Storage, URL:`, downloadURL);
+      
+      return downloadURL;
+    } catch (error) {
+      console.error('Firebase Storage upload error:', error);
+      return null;
     }
   }
 };
