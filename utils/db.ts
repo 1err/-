@@ -70,23 +70,62 @@ const performTransaction = <T>(
 // --- Memories Operations ---
 
 export const getAllMemories = async (): Promise<Memory[]> => {
-  // Try Firebase first, fallback to IndexedDB
+  // Firebase is the source of truth - always use it if available
   if (isFirebaseReady()) {
     try {
       const firebaseData = await firebaseSync.get('memories');
-      if (firebaseData) {
-        const memories = Object.values(firebaseData) as Memory[];
-        // Also save to IndexedDB for offline access
-        await Promise.all(memories.map(m => 
+      if (firebaseData && Object.keys(firebaseData).length > 0) {
+        const firebaseMemories = Object.values(firebaseData) as Memory[];
+        console.log('📥 Loaded from Firebase:', firebaseMemories.length, 'memories');
+        
+        // Get local memories to check for base64 versions (for offline viewing)
+        const localMemories = await performTransaction(STORE_MEMORIES, 'readonly', (store) => store.getAll()) as Memory[];
+        const localMap = new Map(localMemories.map(m => [m.id, m]));
+        
+        // Use Firebase as source of truth, but enhance with local base64 if available
+        const enhancedMemories = firebaseMemories.map(fbMemory => {
+          const localMemory = localMap.get(fbMemory.id);
+          // If we have local base64, use it for better offline experience
+          // But keep Firebase metadata (caption, date) as source of truth
+          if (localMemory && localMemory.url.startsWith('data:')) {
+            return {
+              ...fbMemory, // Use Firebase data as base (caption, date might be updated)
+              url: localMemory.url // But use local base64 for offline viewing
+            };
+          }
+          return fbMemory; // Use Firebase version (has Storage URL)
+        });
+        
+        // Save Firebase data to IndexedDB (replace local with Firebase version)
+        await Promise.all(enhancedMemories.map(m => 
           performTransaction(STORE_MEMORIES, 'readwrite', (store) => store.put(m))
         ));
-        return memories;
+        
+        // Remove any local memories that don't exist in Firebase (they were deleted)
+        const firebaseIds = new Set(firebaseMemories.map(m => m.id));
+        const localOnlyMemories = localMemories.filter(m => !firebaseIds.has(m.id));
+        if (localOnlyMemories.length > 0) {
+          console.log('🗑️ Removing local-only memories (deleted on other device):', localOnlyMemories.length);
+          await Promise.all(localOnlyMemories.map(m => 
+            performTransaction(STORE_MEMORIES, 'readwrite', (store) => store.delete(m.id))
+          ));
+        }
+        
+        return enhancedMemories;
+      } else {
+        // Firebase is empty - clear local data too (everything was deleted)
+        console.log('📭 Firebase is empty, clearing local memories');
+        const localMemories = await performTransaction(STORE_MEMORIES, 'readonly', (store) => store.getAll()) as Memory[];
+        await Promise.all(localMemories.map(m => 
+          performTransaction(STORE_MEMORIES, 'readwrite', (store) => store.delete(m.id))
+        ));
+        return [];
       }
     } catch (error) {
       console.error('Firebase getAllMemories error:', error);
     }
   }
-  // Fallback to IndexedDB
+  // Fallback to IndexedDB only if Firebase not available
   return performTransaction(STORE_MEMORIES, 'readonly', (store) => store.getAll());
 };
 
@@ -115,28 +154,16 @@ export const saveMemory = async (memory: Memory): Promise<IDBValidKey> => {
         }
       }
       
-      // Get all memories and prepare for sync
-      const allMemories = await performTransaction(STORE_MEMORIES, 'readonly', (store) => store.getAll()) as Memory[];
-      const memoriesObj: Record<string, any> = {};
+      // Get current Firebase state and merge (Firebase is source of truth)
+      const firebaseData = await firebaseSync.get('memories');
+      const memoriesObj: Record<string, Memory> = firebaseData || {};
       
-      // For each memory, use Storage URL if available, otherwise use original URL
-      for (const m of allMemories) {
-        if (m.id === memory.id && memoryForFirebase.url !== memory.url) {
-          // Use the Storage URL for this memory
-          memoriesObj[m.id] = memoryForFirebase;
-        } else if (m.url.startsWith('data:')) {
-          // Check if we already have a Storage URL for this memory
-          // For now, skip base64 URLs that are too large
-          // They'll be uploaded when accessed
-          continue;
-        } else {
-          memoriesObj[m.id] = m;
-        }
-      }
+      // Add/update this memory in Firebase
+      memoriesObj[memory.id] = memoryForFirebase;
       
-      console.log('💾 Syncing memories to Firebase:', Object.keys(memoriesObj).length, 'memories');
+      console.log('💾 Syncing memory to Firebase:', memory.id, Object.keys(memoriesObj).length, 'total memories');
       await firebaseSync.save('memories', memoriesObj);
-      console.log('✅ Memories synced to Firebase successfully');
+      console.log('✅ Memory synced to Firebase successfully');
     } catch (error) {
       console.error('❌ Firebase saveMemory sync error:', error);
     }
@@ -149,17 +176,22 @@ export const deleteMemory = async (id: string): Promise<void> => {
   // Delete from IndexedDB first
   await performTransaction(STORE_MEMORIES, 'readwrite', (store) => store.delete(id));
   
-  // Sync to Firebase
+  // Sync deletion to Firebase immediately
   if (isFirebaseReady()) {
     try {
-      const allMemories = await performTransaction(STORE_MEMORIES, 'readonly', (store) => store.getAll()) as Memory[];
-      const memoriesObj: Record<string, Memory> = {};
-      allMemories.forEach(m => {
-        memoriesObj[m.id] = m;
-      });
+      // Get current Firebase data
+      const firebaseData = await firebaseSync.get('memories');
+      const memoriesObj: Record<string, Memory> = firebaseData || {};
+      
+      // Remove the deleted memory
+      delete memoriesObj[id];
+      
+      console.log('🗑️ Deleting memory from Firebase:', id);
+      // Save updated list to Firebase
       await firebaseSync.save('memories', memoriesObj);
+      console.log('✅ Memory deleted from Firebase');
     } catch (error) {
-      console.error('Firebase deleteMemory sync error:', error);
+      console.error('❌ Firebase deleteMemory sync error:', error);
     }
   }
 };
@@ -278,33 +310,46 @@ export const setupRealtimeSync = (
   // Listen to memories changes
   const unsubMemories = firebaseSync.listen('memories', async (data) => {
     console.log('📥 Real-time sync: memories updated', data ? Object.keys(data).length + ' items' : 'empty');
-    if (data && typeof data === 'object') {
+    if (data && typeof data === 'object' && Object.keys(data).length > 0) {
       const firebaseMemories = Object.values(data) as Memory[];
+      const firebaseIds = new Set(firebaseMemories.map(m => m.id));
       
-      // Merge with local IndexedDB (prefer local base64 for offline)
+      // Get local memories for base64 enhancement
       const localMemories = await performTransaction(STORE_MEMORIES, 'readonly', (store) => store.getAll()) as Memory[];
       const localMap = new Map(localMemories.map(m => [m.id, m]));
       
-      // For each Firebase memory, prefer local base64 if available
-      const mergedMemories = firebaseMemories.map(fbMemory => {
+      // Use Firebase as source of truth, enhance with local base64
+      const enhancedMemories = firebaseMemories.map(fbMemory => {
         const localMemory = localMap.get(fbMemory.id);
-        return localMemory && localMemory.url.startsWith('data:') ? localMemory : fbMemory;
+        if (localMemory && localMemory.url.startsWith('data:')) {
+          return { ...fbMemory, url: localMemory.url };
+        }
+        return fbMemory;
       });
       
-      // Add any local-only memories
-      firebaseMemories.forEach(fbMem => localMap.delete(fbMem.id));
-      localMap.forEach(localMem => mergedMemories.push(localMem));
+      // Remove local memories that don't exist in Firebase (deleted elsewhere)
+      const toDelete = localMemories.filter(m => !firebaseIds.has(m.id));
+      if (toDelete.length > 0) {
+        console.log('🗑️ Removing deleted memories:', toDelete.length);
+        await Promise.all(toDelete.map(m => 
+          performTransaction(STORE_MEMORIES, 'readwrite', (store) => store.delete(m.id))
+        ));
+      }
       
-      console.log('🔄 Updating memories from Firebase:', mergedMemories.length);
-      onMemoriesChange(mergedMemories);
-      
-      // Also update IndexedDB
-      Promise.all(mergedMemories.map(m => 
+      // Update IndexedDB with Firebase data
+      await Promise.all(enhancedMemories.map(m => 
         performTransaction(STORE_MEMORIES, 'readwrite', (store) => store.put(m))
-      )).catch(console.error);
-    } else if (data === null) {
-      // Empty data - clear memories
-      console.log('🔄 Clearing memories (Firebase empty)');
+      ));
+      
+      console.log('🔄 Updating memories from Firebase:', enhancedMemories.length);
+      onMemoriesChange(enhancedMemories);
+    } else {
+      // Empty data - clear all memories
+      console.log('🔄 Clearing all memories (Firebase empty)');
+      const localMemories = await performTransaction(STORE_MEMORIES, 'readonly', (store) => store.getAll()) as Memory[];
+      await Promise.all(localMemories.map(m => 
+        performTransaction(STORE_MEMORIES, 'readwrite', (store) => store.delete(m.id))
+      ));
       onMemoriesChange([]);
     }
   });
