@@ -102,9 +102,11 @@ export const saveMemory = async (memory: Memory): Promise<IDBValidKey> => {
       allMemories.forEach(m => {
         memoriesObj[m.id] = m;
       });
+      console.log('💾 Syncing memories to Firebase:', Object.keys(memoriesObj).length, 'memories');
       await firebaseSync.save('memories', memoriesObj);
+      console.log('✅ Memories synced to Firebase successfully');
     } catch (error) {
-      console.error('Firebase saveMemory sync error:', error);
+      console.error('❌ Firebase saveMemory sync error:', error);
     }
   }
   
@@ -235,6 +237,7 @@ export const setupRealtimeSync = (
   onTodosChange: (todos: TodoItem[]) => void
 ): (() => void) => {
   if (!isFirebaseReady()) {
+    console.warn('Firebase not ready, skipping real-time sync setup');
     return () => {}; // Return no-op if Firebase not ready
   }
 
@@ -242,32 +245,47 @@ export const setupRealtimeSync = (
 
   // Listen to memories changes
   const unsubMemories = firebaseSync.listen('memories', (data) => {
-    if (data) {
+    console.log('📥 Real-time sync: memories updated', data ? Object.keys(data).length + ' items' : 'empty');
+    if (data && typeof data === 'object') {
       const memories = Object.values(data) as Memory[];
+      console.log('🔄 Updating memories from Firebase:', memories.length);
       onMemoriesChange(memories);
       // Also update IndexedDB
       Promise.all(memories.map(m => 
         performTransaction(STORE_MEMORIES, 'readwrite', (store) => store.put(m))
       )).catch(console.error);
+    } else if (data === null) {
+      // Empty data - clear memories
+      console.log('🔄 Clearing memories (Firebase empty)');
+      onMemoriesChange([]);
     }
   });
   unsubscribers.push(unsubMemories);
 
   // Listen to todos changes
   const unsubTodos = firebaseSync.listen('todos', (data) => {
-    if (data) {
+    console.log('📥 Real-time sync: todos updated', data ? Object.keys(data).length + ' items' : 'empty');
+    if (data && typeof data === 'object') {
       const todos = Object.values(data) as TodoItem[];
+      console.log('🔄 Updating todos from Firebase:', todos.length);
       onTodosChange(todos);
       // Also update IndexedDB
       Promise.all(todos.map(t => 
         performTransaction(STORE_TODOS, 'readwrite', (store) => store.put(t))
       )).catch(console.error);
+    } else if (data === null) {
+      // Empty data - clear todos
+      console.log('🔄 Clearing todos (Firebase empty)');
+      onTodosChange([]);
     }
   });
   unsubscribers.push(unsubTodos);
 
+  console.log('✅ Real-time sync listeners set up');
+  
   // Return cleanup function
   return () => {
+    console.log('🧹 Cleaning up real-time sync listeners');
     unsubscribers.forEach(unsub => unsub());
   };
 };
