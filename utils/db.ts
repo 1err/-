@@ -136,6 +136,11 @@ export const saveMemory = async (memory: Memory): Promise<IDBValidKey> => {
   // Sync to Firebase (for cross-device sync)
   if (isFirebaseReady()) {
     try {
+      // Set flag to prevent real-time listener from creating duplicates
+      if ((window as any).__setIsSaving) {
+        (window as any).__setIsSaving(true);
+      }
+      
       // Check if URL is base64 (large file) - if so, upload to Storage first
       let memoryForFirebase = { ...memory };
       
@@ -150,6 +155,9 @@ export const saveMemory = async (memory: Memory): Promise<IDBValidKey> => {
           console.log('✅ File uploaded to Storage, using URL for sync');
         } else {
           console.warn('⚠️ Storage upload failed, skipping Firebase sync for this memory');
+          if ((window as any).__setIsSaving) {
+            (window as any).__setIsSaving(false);
+          }
           return result; // Skip Firebase sync if Storage upload fails
         }
       }
@@ -164,8 +172,18 @@ export const saveMemory = async (memory: Memory): Promise<IDBValidKey> => {
       console.log('💾 Syncing memory to Firebase:', memory.id, Object.keys(memoriesObj).length, 'total memories');
       await firebaseSync.save('memories', memoriesObj);
       console.log('✅ Memory synced to Firebase successfully');
+      
+      // Clear flag after a short delay to allow Firebase to process
+      setTimeout(() => {
+        if ((window as any).__setIsSaving) {
+          (window as any).__setIsSaving(false);
+        }
+      }, 1000);
     } catch (error) {
       console.error('❌ Firebase saveMemory sync error:', error);
+      if ((window as any).__setIsSaving) {
+        (window as any).__setIsSaving(false);
+      }
     }
   }
   
@@ -179,6 +197,11 @@ export const deleteMemory = async (id: string): Promise<void> => {
   // Sync deletion to Firebase immediately
   if (isFirebaseReady()) {
     try {
+      // Set flag to prevent real-time listener from interfering
+      if ((window as any).__setIsSaving) {
+        (window as any).__setIsSaving(true);
+      }
+      
       // Get current Firebase data
       const firebaseData = await firebaseSync.get('memories');
       const memoriesObj: Record<string, Memory> = firebaseData || {};
@@ -190,8 +213,18 @@ export const deleteMemory = async (id: string): Promise<void> => {
       // Save updated list to Firebase
       await firebaseSync.save('memories', memoriesObj);
       console.log('✅ Memory deleted from Firebase');
+      
+      // Clear flag after a short delay
+      setTimeout(() => {
+        if ((window as any).__setIsSaving) {
+          (window as any).__setIsSaving(false);
+        }
+      }, 1000);
     } catch (error) {
       console.error('❌ Firebase deleteMemory sync error:', error);
+      if ((window as any).__setIsSaving) {
+        (window as any).__setIsSaving(false);
+      }
     }
   }
 };
@@ -307,8 +340,17 @@ export const setupRealtimeSync = (
 
   const unsubscribers: (() => void)[] = [];
 
+  // Track if we're currently saving to prevent duplicate updates
+  let isSaving = false;
+  
   // Listen to memories changes
   const unsubMemories = firebaseSync.listen('memories', async (data) => {
+    // Skip if we're currently saving (to prevent duplicate updates from our own writes)
+    if (isSaving) {
+      console.log('⏭️ Skipping real-time update (currently saving)');
+      return;
+    }
+    
     console.log('📥 Real-time sync: memories updated', data ? Object.keys(data).length + ' items' : 'empty');
     if (data && typeof data === 'object' && Object.keys(data).length > 0) {
       const firebaseMemories = Object.values(data) as Memory[];
@@ -353,6 +395,11 @@ export const setupRealtimeSync = (
       onMemoriesChange([]);
     }
   });
+  
+  // Export function to set isSaving flag
+  (window as any).__setIsSaving = (value: boolean) => {
+    isSaving = value;
+  };
   unsubscribers.push(unsubMemories);
 
   // Listen to todos changes

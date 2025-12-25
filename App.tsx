@@ -107,13 +107,15 @@ function App() {
           date: new Date().toISOString(),
           caption: '嘿嘿'
         };
-        // Save directly to DB
+        // Save directly to DB (will sync to Firebase and trigger real-time update)
         await db.saveMemory(newMemory);
         return newMemory;
       });
 
-      const newMemories = await Promise.all(newMemoriesPromises);
-      setMemories(prev => [...newMemories, ...prev]);
+      // Don't update state here - let the real-time listener handle it
+      // This prevents duplicates
+      await Promise.all(newMemoriesPromises);
+      // The real-time sync will update the state automatically
     }
   };
 
