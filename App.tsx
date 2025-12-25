@@ -3,8 +3,9 @@ import { Timer } from './components/Timer';
 import { Gallery } from './components/Gallery';
 import { TodoList } from './components/TodoList';
 import { ViewState, Memory, TodoItem } from './types';
-import { Heart, Image as ImageIcon, ListTodo, Home, Camera, Loader2, Settings, Download, Upload, AlertCircle } from 'lucide-react';
+import { Heart, Image as ImageIcon, ListTodo, Home, Camera, Loader2, Settings, Download, Upload, AlertCircle, Cloud, CloudOff } from 'lucide-react';
 import * as db from './utils/db';
+import { isFirebaseReady } from './utils/firebase';
 
 const START_DATE = new Date('2025-10-25T00:00:00');
 
@@ -24,6 +25,7 @@ const fileToBase64 = (file: File): Promise<string> => {
 function App() {
   const [view, setView] = useState<ViewState>(ViewState.HOME);
   const [isLoading, setIsLoading] = useState(true);
+  const [isSyncing, setIsSyncing] = useState(false);
   
   // State
   const [memories, setMemories] = useState<Memory[]>([]);
@@ -35,15 +37,25 @@ function App() {
   const jerryInputRef = useRef<HTMLInputElement>(null);
   const claireInputRef = useRef<HTMLInputElement>(null);
 
-  // Load data from IndexedDB on mount
+  // Initialize Firebase and load data on mount
   useEffect(() => {
     const loadData = async () => {
       try {
-        // Load Memories
+        // Initialize Firebase (will return false if config not provided, but won't error)
+        const firebaseInitialized = await db.initializeFirebase();
+        setIsSyncing(firebaseInitialized);
+        
+        if (firebaseInitialized) {
+          console.log('✅ Firebase initialized successfully');
+        } else {
+          console.warn('⚠️ Firebase not initialized - check .env.local file');
+        }
+
+        // Load Memories (will try Firebase first, fallback to IndexedDB)
         const savedMemories = await db.getAllMemories();
         setMemories(savedMemories.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()));
 
-        // Load Todos
+        // Load Todos (will try Firebase first, fallback to IndexedDB)
         const savedTodos = await db.getAllTodos();
         setTodos(savedTodos);
 
@@ -54,8 +66,25 @@ function App() {
         const savedClaire = await db.getSetting('avatar_claire');
         if (savedClaire) setClaireImage(savedClaire.value);
 
+        // Set up real-time sync if Firebase is ready
+        if (firebaseInitialized && isFirebaseReady()) {
+          const unsubscribe = db.setupRealtimeSync(
+            (newMemories) => {
+              setMemories(newMemories.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()));
+            },
+            (newTodos) => {
+              setTodos(newTodos);
+            }
+          );
+
+          // Cleanup on unmount
+          return () => {
+            unsubscribe();
+          };
+        }
       } catch (error) {
         console.error("Failed to load data from DB:", error);
+        setIsSyncing(false);
       } finally {
         setIsLoading(false);
       }
@@ -360,6 +389,21 @@ function App() {
         <h1 className="text-2xl md:text-4xl font-bold text-gray-800 serif mb-2 tracking-wide">
           火爆粽子和寒冰坚果的爱情
         </h1>
+        
+        {/* Sync Status Indicator */}
+        <div className="flex items-center justify-center gap-2 mt-2">
+          {isSyncing ? (
+            <>
+              <Cloud className="w-4 h-4 text-green-500" />
+              <span className="text-xs text-green-600">云端同步已开启</span>
+            </>
+          ) : (
+            <>
+              <CloudOff className="w-4 h-4 text-gray-400" />
+              <span className="text-xs text-gray-500">仅本地存储</span>
+            </>
+          )}
+        </div>
       </div>
 
       {/* Main Container */}
@@ -527,7 +571,7 @@ function App() {
       </div>
 
       <footer className="mt-20 text-center text-gray-400 text-sm pb-8">
-        <p>© 2025 向往 我会一直喜欢你的.</p>
+        <p>© 向往 我会一直喜欢你的 ~ 瑞瑞</p>
       </footer>
       
       <style>{`

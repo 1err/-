@@ -1,10 +1,20 @@
 import { Memory, TodoItem } from '../types';
+import { initFirebase, firebaseSync, isFirebaseReady } from './firebase';
 
 const DB_NAME = 'LoveStoryDB';
 const DB_VERSION = 1;
 const STORE_MEMORIES = 'memories';
 const STORE_TODOS = 'todos';
 const STORE_SETTINGS = 'settings';
+
+// Initialize Firebase on module load
+let firebaseInitPromise: Promise<boolean> | null = null;
+export const initializeFirebase = async (): Promise<boolean> => {
+  if (!firebaseInitPromise) {
+    firebaseInitPromise = initFirebase();
+  }
+  return firebaseInitPromise;
+};
 
 export const initDB = (): Promise<IDBDatabase> => {
   return new Promise((resolve, reject) => {
@@ -59,38 +69,205 @@ const performTransaction = <T>(
 
 // --- Memories Operations ---
 
-export const getAllMemories = (): Promise<Memory[]> => {
+export const getAllMemories = async (): Promise<Memory[]> => {
+  // Try Firebase first, fallback to IndexedDB
+  if (isFirebaseReady()) {
+    try {
+      const firebaseData = await firebaseSync.get('memories');
+      if (firebaseData) {
+        const memories = Object.values(firebaseData) as Memory[];
+        // Also save to IndexedDB for offline access
+        await Promise.all(memories.map(m => 
+          performTransaction(STORE_MEMORIES, 'readwrite', (store) => store.put(m))
+        ));
+        return memories;
+      }
+    } catch (error) {
+      console.error('Firebase getAllMemories error:', error);
+    }
+  }
+  // Fallback to IndexedDB
   return performTransaction(STORE_MEMORIES, 'readonly', (store) => store.getAll());
 };
 
-export const saveMemory = (memory: Memory): Promise<IDBValidKey> => {
-  return performTransaction(STORE_MEMORIES, 'readwrite', (store) => store.put(memory));
+export const saveMemory = async (memory: Memory): Promise<IDBValidKey> => {
+  // Save to IndexedDB first (fast, local)
+  const result = await performTransaction(STORE_MEMORIES, 'readwrite', (store) => store.put(memory));
+  
+  // Sync to Firebase (for cross-device sync)
+  if (isFirebaseReady()) {
+    try {
+      const allMemories = await performTransaction(STORE_MEMORIES, 'readonly', (store) => store.getAll()) as Memory[];
+      const memoriesObj: Record<string, Memory> = {};
+      allMemories.forEach(m => {
+        memoriesObj[m.id] = m;
+      });
+      await firebaseSync.save('memories', memoriesObj);
+    } catch (error) {
+      console.error('Firebase saveMemory sync error:', error);
+    }
+  }
+  
+  return result;
 };
 
-export const deleteMemory = (id: string): Promise<void> => {
-  return performTransaction(STORE_MEMORIES, 'readwrite', (store) => store.delete(id));
+export const deleteMemory = async (id: string): Promise<void> => {
+  // Delete from IndexedDB first
+  await performTransaction(STORE_MEMORIES, 'readwrite', (store) => store.delete(id));
+  
+  // Sync to Firebase
+  if (isFirebaseReady()) {
+    try {
+      const allMemories = await performTransaction(STORE_MEMORIES, 'readonly', (store) => store.getAll()) as Memory[];
+      const memoriesObj: Record<string, Memory> = {};
+      allMemories.forEach(m => {
+        memoriesObj[m.id] = m;
+      });
+      await firebaseSync.save('memories', memoriesObj);
+    } catch (error) {
+      console.error('Firebase deleteMemory sync error:', error);
+    }
+  }
 };
 
 // --- Todo Operations ---
 
-export const getAllTodos = (): Promise<TodoItem[]> => {
+export const getAllTodos = async (): Promise<TodoItem[]> => {
+  // Try Firebase first, fallback to IndexedDB
+  if (isFirebaseReady()) {
+    try {
+      const firebaseData = await firebaseSync.get('todos');
+      if (firebaseData) {
+        const todos = Object.values(firebaseData) as TodoItem[];
+        // Also save to IndexedDB for offline access
+        await Promise.all(todos.map(t => 
+          performTransaction(STORE_TODOS, 'readwrite', (store) => store.put(t))
+        ));
+        return todos;
+      }
+    } catch (error) {
+      console.error('Firebase getAllTodos error:', error);
+    }
+  }
+  // Fallback to IndexedDB
   return performTransaction(STORE_TODOS, 'readonly', (store) => store.getAll());
 };
 
-export const saveTodo = (todo: TodoItem): Promise<IDBValidKey> => {
-  return performTransaction(STORE_TODOS, 'readwrite', (store) => store.put(todo));
+export const saveTodo = async (todo: TodoItem): Promise<IDBValidKey> => {
+  // Save to IndexedDB first (fast, local)
+  const result = await performTransaction(STORE_TODOS, 'readwrite', (store) => store.put(todo));
+  
+  // Sync to Firebase (for cross-device sync)
+  if (isFirebaseReady()) {
+    try {
+      const allTodos = await performTransaction(STORE_TODOS, 'readonly', (store) => store.getAll()) as TodoItem[];
+      const todosObj: Record<string, TodoItem> = {};
+      allTodos.forEach(t => {
+        todosObj[t.id] = t;
+      });
+      await firebaseSync.save('todos', todosObj);
+    } catch (error) {
+      console.error('Firebase saveTodo sync error:', error);
+    }
+  }
+  
+  return result;
 };
 
-export const deleteTodo = (id: string): Promise<void> => {
-  return performTransaction(STORE_TODOS, 'readwrite', (store) => store.delete(id));
+export const deleteTodo = async (id: string): Promise<void> => {
+  // Delete from IndexedDB first
+  await performTransaction(STORE_TODOS, 'readwrite', (store) => store.delete(id));
+  
+  // Sync to Firebase
+  if (isFirebaseReady()) {
+    try {
+      const allTodos = await performTransaction(STORE_TODOS, 'readonly', (store) => store.getAll()) as TodoItem[];
+      const todosObj: Record<string, TodoItem> = {};
+      allTodos.forEach(t => {
+        todosObj[t.id] = t;
+      });
+      await firebaseSync.save('todos', todosObj);
+    } catch (error) {
+      console.error('Firebase deleteTodo sync error:', error);
+    }
+  }
 };
 
 // --- Settings/Avatar Operations ---
 
-export const getSetting = (key: string): Promise<any> => {
+export const getSetting = async (key: string): Promise<any> => {
+  // Try Firebase first
+  if (isFirebaseReady()) {
+    try {
+      const firebaseData = await firebaseSync.get(`settings/${key}`);
+      if (firebaseData !== null) {
+        // Also save to IndexedDB
+        await performTransaction(STORE_SETTINGS, 'readwrite', (store) => store.put({ key, value: firebaseData }));
+        return { key, value: firebaseData };
+      }
+    } catch (error) {
+      console.error('Firebase getSetting error:', error);
+    }
+  }
+  // Fallback to IndexedDB
   return performTransaction(STORE_SETTINGS, 'readonly', (store) => store.get(key));
 };
 
-export const saveSetting = (key: string, value: any): Promise<IDBValidKey> => {
-  return performTransaction(STORE_SETTINGS, 'readwrite', (store) => store.put({ key, value }));
+export const saveSetting = async (key: string, value: any): Promise<IDBValidKey> => {
+  // Save to IndexedDB first
+  const result = await performTransaction(STORE_SETTINGS, 'readwrite', (store) => store.put({ key, value }));
+  
+  // Sync to Firebase
+  if (isFirebaseReady()) {
+    try {
+      await firebaseSync.save(`settings/${key}`, value);
+    } catch (error) {
+      console.error('Firebase saveSetting sync error:', error);
+    }
+  }
+  
+  return result;
+};
+
+// Real-time sync listeners
+export const setupRealtimeSync = (
+  onMemoriesChange: (memories: Memory[]) => void,
+  onTodosChange: (todos: TodoItem[]) => void
+): (() => void) => {
+  if (!isFirebaseReady()) {
+    return () => {}; // Return no-op if Firebase not ready
+  }
+
+  const unsubscribers: (() => void)[] = [];
+
+  // Listen to memories changes
+  const unsubMemories = firebaseSync.listen('memories', (data) => {
+    if (data) {
+      const memories = Object.values(data) as Memory[];
+      onMemoriesChange(memories);
+      // Also update IndexedDB
+      Promise.all(memories.map(m => 
+        performTransaction(STORE_MEMORIES, 'readwrite', (store) => store.put(m))
+      )).catch(console.error);
+    }
+  });
+  unsubscribers.push(unsubMemories);
+
+  // Listen to todos changes
+  const unsubTodos = firebaseSync.listen('todos', (data) => {
+    if (data) {
+      const todos = Object.values(data) as TodoItem[];
+      onTodosChange(todos);
+      // Also update IndexedDB
+      Promise.all(todos.map(t => 
+        performTransaction(STORE_TODOS, 'readwrite', (store) => store.put(t))
+      )).catch(console.error);
+    }
+  });
+  unsubscribers.push(unsubTodos);
+
+  // Return cleanup function
+  return () => {
+    unsubscribers.forEach(unsub => unsub());
+  };
 };
