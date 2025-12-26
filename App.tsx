@@ -192,15 +192,25 @@ function App() {
     if (todo) {
       const updated = { ...todo, completed: !todo.completed };
       await db.saveTodo(updated);
-      // Update state immediately
-      setTodos(prev => prev.map(t => t.id === id ? updated : t));
+      // Update state immediately - deduplicate to prevent issues
+      setTodos(prev => {
+        const existing = prev.find(t => t.id === id);
+        if (existing) {
+          return prev.map(t => t.id === id ? updated : t);
+        }
+        return prev;
+      });
     }
   };
 
   const handleDeleteTodo = async (id: string) => {
     await db.deleteTodo(id);
-    // Update state immediately
-    setTodos(prev => prev.filter(t => t.id !== id));
+    // Update state immediately - ensure it's actually removed
+    setTodos(prev => {
+      const filtered = prev.filter(t => t.id !== id);
+      console.log('🗑️ Deleted todo locally, new count:', filtered.length);
+      return filtered;
+    });
   };
 
   // Backup & Restore Functions

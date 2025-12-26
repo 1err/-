@@ -258,8 +258,14 @@ export const saveTodo = async (todo: TodoItem): Promise<IDBValidKey> => {
       // Add/update this todo in Firebase
       todosObj[todo.id] = todo;
       
-      console.log('💾 Syncing todo to Firebase:', todo.id, Object.keys(todosObj).length, 'total todos');
-      await firebaseSync.save('todos', todosObj);
+      // Ensure no duplicates in the object (shouldn't happen, but safety check)
+      const uniqueTodosObj: Record<string, TodoItem> = {};
+      Object.values(todosObj).forEach(t => {
+        uniqueTodosObj[t.id] = t;
+      });
+      
+      console.log('💾 Syncing todo to Firebase:', todo.id, Object.keys(uniqueTodosObj).length, 'total todos');
+      await firebaseSync.save('todos', uniqueTodosObj);
       console.log('✅ Todo synced to Firebase successfully');
     } catch (error) {
       console.error('❌ Firebase saveTodo sync error:', error);
@@ -412,9 +418,14 @@ export const setupRealtimeSync = (
         performTransaction(STORE_TODOS, 'readwrite', (store) => store.put(t))
       ));
       
-      console.log('🔄 Updating todos from Firebase:', firebaseTodos.length);
-      // Always update - the callback will deduplicate by ID
-      onTodosChange(firebaseTodos);
+      // Deduplicate by ID before updating state
+      const uniqueTodos = firebaseTodos.filter((todo, index, self) => 
+        index === self.findIndex(t => t.id === todo.id)
+      );
+      
+      console.log('🔄 Updating todos from Firebase:', uniqueTodos.length, '(deduplicated from', firebaseTodos.length, ')');
+      // Always update with deduplicated list
+      onTodosChange(uniqueTodos);
     } else {
       // Empty data - clear all todos
       console.log('🔄 Clearing all todos (Firebase empty)');
