@@ -391,19 +391,37 @@ export const setupRealtimeSync = (
   unsubscribers.push(unsubMemories);
 
   // Listen to todos changes
-  const unsubTodos = firebaseSync.listen('todos', (data) => {
+  const unsubTodos = firebaseSync.listen('todos', async (data) => {
     console.log('📥 Real-time sync: todos updated', data ? Object.keys(data).length + ' items' : 'empty');
-    if (data && typeof data === 'object') {
-      const todos = Object.values(data) as TodoItem[];
-      console.log('🔄 Updating todos from Firebase:', todos.length);
-      onTodosChange(todos);
-      // Also update IndexedDB
-      Promise.all(todos.map(t => 
+    if (data && typeof data === 'object' && Object.keys(data).length > 0) {
+      const firebaseTodos = Object.values(data) as TodoItem[];
+      const firebaseIds = new Set(firebaseTodos.map(t => t.id));
+      
+      // Remove local todos that don't exist in Firebase (deleted elsewhere)
+      const localTodos = await performTransaction(STORE_TODOS, 'readonly', (store) => store.getAll()) as TodoItem[];
+      const toDelete = localTodos.filter(t => !firebaseIds.has(t.id));
+      if (toDelete.length > 0) {
+        console.log('🗑️ Removing deleted todos:', toDelete.length);
+        await Promise.all(toDelete.map(t => 
+          performTransaction(STORE_TODOS, 'readwrite', (store) => store.delete(t.id))
+        ));
+      }
+      
+      // Update IndexedDB with Firebase data
+      await Promise.all(firebaseTodos.map(t => 
         performTransaction(STORE_TODOS, 'readwrite', (store) => store.put(t))
-      )).catch(console.error);
-    } else if (data === null) {
-      // Empty data - clear todos
-      console.log('🔄 Clearing todos (Firebase empty)');
+      ));
+      
+      console.log('🔄 Updating todos from Firebase:', firebaseTodos.length);
+      // Always update - the callback will deduplicate by ID
+      onTodosChange(firebaseTodos);
+    } else {
+      // Empty data - clear all todos
+      console.log('🔄 Clearing all todos (Firebase empty)');
+      const localTodos = await performTransaction(STORE_TODOS, 'readonly', (store) => store.getAll()) as TodoItem[];
+      await Promise.all(localTodos.map(t => 
+        performTransaction(STORE_TODOS, 'readwrite', (store) => store.delete(t.id))
+      ));
       onTodosChange([]);
     }
   });
