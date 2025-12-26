@@ -202,23 +202,45 @@ export const deleteMemory = async (id: string): Promise<void> => {
 // --- Todo Operations ---
 
 export const getAllTodos = async (): Promise<TodoItem[]> => {
-  // Try Firebase first, fallback to IndexedDB
+  // Firebase is the source of truth - always use it if available
   if (isFirebaseReady()) {
     try {
       const firebaseData = await firebaseSync.get('todos');
-      if (firebaseData) {
-        const todos = Object.values(firebaseData) as TodoItem[];
-        // Also save to IndexedDB for offline access
-        await Promise.all(todos.map(t => 
+      if (firebaseData && Object.keys(firebaseData).length > 0) {
+        const firebaseTodos = Object.values(firebaseData) as TodoItem[];
+        console.log('📥 Loaded from Firebase:', firebaseTodos.length, 'todos');
+        
+        // Save Firebase data to IndexedDB (replace local with Firebase version)
+        await Promise.all(firebaseTodos.map(t => 
           performTransaction(STORE_TODOS, 'readwrite', (store) => store.put(t))
         ));
-        return todos;
+        
+        // Remove any local todos that don't exist in Firebase (they were deleted)
+        const localTodos = await performTransaction(STORE_TODOS, 'readonly', (store) => store.getAll()) as TodoItem[];
+        const firebaseIds = new Set(firebaseTodos.map(t => t.id));
+        const localOnlyTodos = localTodos.filter(t => !firebaseIds.has(t.id));
+        if (localOnlyTodos.length > 0) {
+          console.log('🗑️ Removing local-only todos (deleted on other device):', localOnlyTodos.length);
+          await Promise.all(localOnlyTodos.map(t => 
+            performTransaction(STORE_TODOS, 'readwrite', (store) => store.delete(t.id))
+          ));
+        }
+        
+        return firebaseTodos;
+      } else {
+        // Firebase is empty - clear local data too (everything was deleted)
+        console.log('📭 Firebase is empty, clearing local todos');
+        const localTodos = await performTransaction(STORE_TODOS, 'readonly', (store) => store.getAll()) as TodoItem[];
+        await Promise.all(localTodos.map(t => 
+          performTransaction(STORE_TODOS, 'readwrite', (store) => store.delete(t.id))
+        ));
+        return [];
       }
     } catch (error) {
       console.error('Firebase getAllTodos error:', error);
     }
   }
-  // Fallback to IndexedDB
+  // Fallback to IndexedDB only if Firebase not available
   return performTransaction(STORE_TODOS, 'readonly', (store) => store.getAll());
 };
 
@@ -229,14 +251,18 @@ export const saveTodo = async (todo: TodoItem): Promise<IDBValidKey> => {
   // Sync to Firebase (for cross-device sync)
   if (isFirebaseReady()) {
     try {
-      const allTodos = await performTransaction(STORE_TODOS, 'readonly', (store) => store.getAll()) as TodoItem[];
-      const todosObj: Record<string, TodoItem> = {};
-      allTodos.forEach(t => {
-        todosObj[t.id] = t;
-      });
+      // Get current Firebase state and merge (Firebase is source of truth)
+      const firebaseData = await firebaseSync.get('todos');
+      const todosObj: Record<string, TodoItem> = firebaseData || {};
+      
+      // Add/update this todo in Firebase
+      todosObj[todo.id] = todo;
+      
+      console.log('💾 Syncing todo to Firebase:', todo.id, Object.keys(todosObj).length, 'total todos');
       await firebaseSync.save('todos', todosObj);
+      console.log('✅ Todo synced to Firebase successfully');
     } catch (error) {
-      console.error('Firebase saveTodo sync error:', error);
+      console.error('❌ Firebase saveTodo sync error:', error);
     }
   }
   
@@ -247,17 +273,22 @@ export const deleteTodo = async (id: string): Promise<void> => {
   // Delete from IndexedDB first
   await performTransaction(STORE_TODOS, 'readwrite', (store) => store.delete(id));
   
-  // Sync to Firebase
+  // Sync deletion to Firebase immediately
   if (isFirebaseReady()) {
     try {
-      const allTodos = await performTransaction(STORE_TODOS, 'readonly', (store) => store.getAll()) as TodoItem[];
-      const todosObj: Record<string, TodoItem> = {};
-      allTodos.forEach(t => {
-        todosObj[t.id] = t;
-      });
+      // Get current Firebase data
+      const firebaseData = await firebaseSync.get('todos');
+      const todosObj: Record<string, TodoItem> = firebaseData || {};
+      
+      // Remove the deleted todo
+      delete todosObj[id];
+      
+      console.log('🗑️ Deleting todo from Firebase:', id);
+      // Save updated list to Firebase
       await firebaseSync.save('todos', todosObj);
+      console.log('✅ Todo deleted from Firebase');
     } catch (error) {
-      console.error('Firebase deleteTodo sync error:', error);
+      console.error('❌ Firebase deleteTodo sync error:', error);
     }
   }
 };

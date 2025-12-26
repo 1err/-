@@ -176,7 +176,15 @@ function App() {
   // Specific Todo DB Actions
   const handleAddTodo = async (todo: TodoItem) => {
     await db.saveTodo(todo);
-    setTodos(prev => [todo, ...prev]);
+    // Update state immediately for instant feedback
+    // The real-time listener will also update, but we deduplicate by ID
+    setTodos(prev => {
+      const existingIds = new Set(prev.map(t => t.id));
+      if (existingIds.has(todo.id)) {
+        return prev; // Already exists, don't add duplicate
+      }
+      return [todo, ...prev];
+    });
   };
 
   const handleToggleTodo = async (id: string) => {
@@ -184,12 +192,14 @@ function App() {
     if (todo) {
       const updated = { ...todo, completed: !todo.completed };
       await db.saveTodo(updated);
+      // Update state immediately
       setTodos(prev => prev.map(t => t.id === id ? updated : t));
     }
   };
 
   const handleDeleteTodo = async (id: string) => {
     await db.deleteTodo(id);
+    // Update state immediately
     setTodos(prev => prev.filter(t => t.id !== id));
   };
 
