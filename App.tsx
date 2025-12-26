@@ -73,7 +73,12 @@ function App() {
               setMemories(newMemories.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()));
             },
             (newTodos) => {
-              setTodos(newTodos);
+              // Deduplicate by ID before setting state
+              const uniqueTodos = newTodos.filter((todo, index, self) => 
+                index === self.findIndex(t => t.id === todo.id)
+              );
+              console.log('🔄 Setting todos from real-time sync:', uniqueTodos.length, '(deduplicated from', newTodos.length, ')');
+              setTodos(uniqueTodos);
             }
           );
 
